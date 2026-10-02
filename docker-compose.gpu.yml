@@ -1,0 +1,22 @@
+# Opt-in GPU override. Layer it on top of the base compose file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Needs an NVIDIA driver + NVIDIA Container Toolkit on the host.
+services:
+  onnx-lfm-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    environment:
+      # fp16 is the sweet spot on GPU (native fp16, model fits easily in VRAM).
+      # Change here if you want a different variant on GPU.
+      LFM_QUANT: "fp16"
+      LFM_PROVIDERS: '["CUDAExecutionProvider","CPUExecutionProvider"]'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,25 @@
+services:
+  onnx-lfm-api:
+    build: .
+    image: onnx-lfm-api:latest
+    container_name: onnx-lfm-api
+    ports:
+      # Bind to all interfaces so other machines on the LAN can reach it.
+      - "8383:8383"
+    volumes:
+      # Model is downloaded here on first run and reused afterwards.
+      - ./models:/models
+    environment:
+      LFM_QUANT: "${LFM_QUANT:-q4}"   # override in ./.env; q4 | q4f16 | q8 | fp16 | "" (fp32)
+      LFM_PORT: "8383"
+      LFM_MAX_TOKENS: "256"
+      # Secret is read from ./.env (gitignored), never hardcoded here.
+      # Unset/empty => auth disabled (fine for a trusted LAN).
+      LFM_API_KEY: "${LFM_API_KEY:-}"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('LFM_PORT','8383'), timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s

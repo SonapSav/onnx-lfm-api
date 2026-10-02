@@ -1,0 +1,47 @@
+# GPU (NVIDIA / CUDA) image — OPT-IN. The CPU Dockerfile remains the default.
+#
+# Requires on the host: an NVIDIA driver + the NVIDIA Container Toolkit, and the
+# container run with GPU access (`--gpus all`, or the device reservation in
+# docker-compose.gpu.yml).
+#
+# IMPORTANT: the CUDA/cuDNN version of this base image must match what
+# onnxruntime-gpu expects. onnxruntime-gpu 1.30 targets CUDA 12.x + cuDNN 9.
+# If you bump the ORT version, bump this base tag to match.
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive \
+    LFM_CACHE_DIR=/models \
+    LFM_QUANT=fp16 \
+    LFM_PROVIDERS='["CUDAExecutionProvider","CPUExecutionProvider"]'
+
+# Python 3.13 via deadsnakes, to keep parity with the CPU image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      software-properties-common ca-certificates && \
+    add-apt-repository -y ppa:deadsnakes/ppa && \
+    apt-get update && apt-get install -y --no-install-recommends \
+      python3.13 python3.13-venv && \
+    rm -rf /var/lib/apt/lists/*
+
+# Isolate in a venv so `python`/`pip` resolve to 3.13.
+ENV VIRTUAL_ENV=/opt/venv PATH=/opt/venv/bin:$PATH
+RUN python3.13 -m venv /opt/venv && pip install --upgrade pip
+
+WORKDIR /app
+COPY pyproject.toml ./
+COPY src ./src
+
+# Install the app (which pulls the CPU onnxruntime), then swap in the CUDA build.
+RUN pip install . && \
+    pip uninstall -y onnxruntime && \
+    pip install "onnxruntime-gpu==1.30.0"
+
+EXPOSE 8383
+VOLUME ["/models"]
+
+# Longer start-period: CUDA init + a possible first-run fp16 model download.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD python -c "import os,urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:%s/health' % os.environ.get('LFM_PORT','8383'), timeout=3).status==200 else 1)"
+
+CMD ["python", "-m", "onnx_lfm_api"]
