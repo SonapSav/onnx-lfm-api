@@ -74,16 +74,23 @@ rejected; `temperature` and `max_tokens`/`max_completion_tokens` are honored.
 ## CLI chat client
 
 An interactive, streaming, multi-turn chat client ships with the package. It
-talks to a running server and auto-reads `LFM_API_KEY` from `./.env`.
+talks to an already-running server (e.g. the Docker container) and auto-reads
+`LFM_API_KEY` from `./.env` — you don't need to start anything else.
 
 ```bash
-lfm-chat                                   # after pip install -e .
-# or without installing the console script:
-python -m onnx_lfm_api.chat_cli
+# the CLI lives in the venv, so activate it first:
+source .venv/bin/activate
+lfm-chat
+# ...or run it without activating:
+.venv/bin/lfm-chat
+# ...or as a module:
+.venv/bin/python -m onnx_lfm_api.chat_cli
 
 # point at a LAN server, set a system prompt:
 lfm-chat --url http://192.168.0.125:8383/v1 --system "You are concise."
 ```
+
+If the server isn't up yet, start it first with `docker compose up -d`.
 
 In-chat commands: `/reset` (clear history), `/system <text>`, `/exit`.
 Flags: `--model`, `--max-tokens`, `--temperature`, `--no-stream`.
