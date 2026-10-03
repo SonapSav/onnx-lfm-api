@@ -71,6 +71,37 @@ The key is accepted as either `Authorization: Bearer <key>` (OpenAI default) or
 `X-API-Key: <key>`. Unimplemented OpenAI fields are ignored rather than
 rejected; `temperature` and `max_tokens`/`max_completion_tokens` are honored.
 
+### Tool calling
+
+`/v1/chat/completions` supports OpenAI-style function calling. Pass `tools`;
+when the model calls one, the response has `finish_reason: "tool_calls"` and
+`message.tool_calls` (arguments as a JSON string). Append the result as a
+`role: "tool"` message to continue the conversation.
+
+```python
+tools = [{"type": "function", "function": {
+    "name": "get_weather",
+    "description": "Get the current weather for a city.",
+    "parameters": {"type": "object",
+                   "properties": {"city": {"type": "string"}},
+                   "required": ["city"]}}}]
+
+msgs = [{"role": "user", "content": "What's the weather in Paris?"}]
+r = client.chat.completions.create(model="lfm2.5", messages=msgs, tools=tools)
+call = r.choices[0].message.tool_calls[0]          # -> get_weather {"city": "Paris"}
+
+msgs += [
+    r.choices[0].message,                           # the assistant tool call
+    {"role": "tool", "tool_call_id": call.id,
+     "content": '{"temp_c": 18, "conditions": "sunny"}'},
+]
+final = client.chat.completions.create(model="lfm2.5", messages=msgs, tools=tools)
+print(final.choices[0].message.content)             # -> "...18°C with sunny conditions."
+```
+
+Under the hood LFM2 emits calls as `<|tool_call_start|>[fn(arg=val)]<|tool_call_end|>`,
+which the server parses (via `ast`, no `eval`) into OpenAI `tool_calls`.
+
 ## CLI chat client
 
 An interactive, streaming, multi-turn chat client ships with the package. It

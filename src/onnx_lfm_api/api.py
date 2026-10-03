@@ -12,7 +12,13 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from .config import settings
-from .generate import GenParams, generate_collect, generate_stream, generate_text
+from .generate import (
+    GenParams,
+    generate_collect,
+    generate_stream,
+    generate_text,
+    generate_turn,
+)
 from .model import ModelBundle, load_model
 
 
@@ -142,8 +148,13 @@ async def chat_stream(req: ChatRequest):
 
 
 class OpenAIMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     role: str
     content: str | None = None
+    tool_calls: list[dict] | None = None  # assistant turns from a prior response
+    tool_call_id: str | None = None  # on role="tool" results
+    name: str | None = None
 
 
 class OpenAIChatRequest(BaseModel):
@@ -156,6 +167,8 @@ class OpenAIChatRequest(BaseModel):
     max_completion_tokens: int | None = None
     temperature: float | None = None
     stream: bool = False
+    tools: list[dict] | None = None
+    tool_choice: object = None  # accepted but not enforced
 
 
 def _openai_params(req: OpenAIChatRequest) -> GenParams:
@@ -166,6 +179,52 @@ def _openai_params(req: OpenAIChatRequest) -> GenParams:
         top_k=settings.top_k,
         repetition_penalty=settings.repetition_penalty,
     )
+
+
+def _py_literal(v: object) -> str:
+    """Render a JSON value as the Python-ish literal LFM2 uses in tool calls."""
+    if isinstance(v, str):
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(v, bool):
+        return "True" if v else "False"
+    if v is None:
+        return "None"
+    return json.dumps(v)
+
+
+def _to_template_messages(messages: list[OpenAIMessage]) -> list[dict]:
+    """Convert OpenAI-shaped messages (including assistant `tool_calls` and
+    `tool` results) into the string-content form LFM2's chat template expects."""
+    out: list[dict] = []
+    for m in messages:
+        if m.role == "assistant" and m.tool_calls:
+            calls = []
+            for tc in m.tool_calls:
+                fn = (tc or {}).get("function", {})
+                try:
+                    args = json.loads(fn.get("arguments") or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    args = {}
+                kw = ", ".join(f"{k}={_py_literal(v)}" for k, v in args.items())
+                calls.append(f"{fn.get('name', '')}({kw})")
+            content = f"<|tool_call_start|>[{', '.join(calls)}]<|tool_call_end|>"
+            if m.content:
+                content += m.content
+            out.append({"role": "assistant", "content": content})
+        else:
+            out.append({"role": m.role, "content": m.content or ""})
+    return out
+
+
+def _openai_tool_calls(calls: list[dict]) -> list[dict]:
+    return [
+        {
+            "id": f"call_{uuid.uuid4().hex[:24]}",
+            "type": "function",
+            "function": {"name": c["name"], "arguments": json.dumps(c["arguments"])},
+        }
+        for c in calls
+    ]
 
 
 @app.get("/v1/models", dependencies=[Depends(require_api_key)])
@@ -187,22 +246,62 @@ async def list_models():
 async def chat_completions(req: OpenAIChatRequest):
     bundle: ModelBundle = app.state.model
     p = _openai_params(req)
-    msgs = [{"role": m.role, "content": m.content or ""} for m in req.messages]
+    msgs = _to_template_messages(req.messages)
     model_name = req.model or settings.model_repo
     cid = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
 
-    if req.stream:
-        def chunk(delta: dict, finish: str | None = None) -> str:
-            payload = {
-                "id": cid,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": model_name,
-                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
-            }
-            return f"data: {json.dumps(payload)}\n\n"
+    def chunk(delta: dict, finish: str | None = None) -> str:
+        payload = {
+            "id": cid,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model_name,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        }
+        return f"data: {json.dumps(payload)}\n\n"
 
+    # --- Tool-aware path: generate fully, then shape (no incremental deltas) ---
+    if req.tools:
+        async with app.state.lock:
+            result = await asyncio.to_thread(generate_turn, bundle, msgs, p, req.tools)
+        message: dict = {"role": "assistant", "content": result["content"]}
+        if result["tool_calls"]:
+            message["tool_calls"] = _openai_tool_calls(result["tool_calls"])
+        finish = result["finish_reason"]
+        usage = {
+            "prompt_tokens": result["prompt_tokens"],
+            "completion_tokens": result["completion_tokens"],
+            "total_tokens": result["prompt_tokens"] + result["completion_tokens"],
+        }
+
+        if req.stream:
+            async def tool_stream():
+                yield chunk({"role": "assistant"})
+                if message.get("tool_calls"):
+                    yield chunk({"tool_calls": [
+                        {"index": i, "id": tc["id"], "type": "function",
+                         "function": tc["function"]}
+                        for i, tc in enumerate(message["tool_calls"])
+                    ]})
+                elif result["content"]:
+                    yield chunk({"content": result["content"]})
+                yield chunk({}, finish=finish)
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(tool_stream(), media_type="text/event-stream")
+
+        return {
+            "id": cid,
+            "object": "chat.completion",
+            "created": created,
+            "model": model_name,
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+            "usage": usage,
+        }
+
+    # --- No tools: real token-by-token streaming / plain completion ---
+    if req.stream:
         async def event_stream():
             queue: asyncio.Queue = asyncio.Queue()
             loop = asyncio.get_running_loop()

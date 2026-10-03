@@ -25,6 +25,11 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
 - `model.py` — downloads + loads ONNX session + tokenizer **once** at startup.
 - `generate.py` — the dual-state decode loop + sampling + streaming (the core).
 - `api.py` — `/health`, `/chat`, `/chat/stream`, OpenAI `/v1/*`; generation serialized with a lock.
+  - Tool calling: `/v1/chat/completions` accepts OpenAI `tools`. LFM2 emits
+    `<|tool_call_start|>[fn(arg=val)]<|tool_call_end|>` (token ids 10/11);
+    `generate.generate_turn` + `_parse_tool_calls` (via `ast`, no eval) convert
+    to OpenAI `tool_calls`. Tool/assistant history is mapped back to the
+    template's string form in `api._to_template_messages`.
 - `chat_cli.py` — interactive client (`lfm-chat`).
 
 ## Conventions

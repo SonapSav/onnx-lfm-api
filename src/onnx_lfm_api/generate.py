@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
-from typing import Iterator
+from typing import Any, Iterator
 
 import numpy as np
 
@@ -16,6 +17,10 @@ _DTYPE_MAP = {
 }
 
 _CORE_INPUTS = {"input_ids", "attention_mask", "position_ids"}
+
+# LFM2 emits tool calls as  <|tool_call_start|>[fn(arg=val), ...]<|tool_call_end|>
+TOOL_CALL_START_ID = 10
+TOOL_CALL_END_ID = 11
 
 
 @dataclass
@@ -69,19 +74,33 @@ def _sample(logits: np.ndarray, generated: list[int], p: GenParams) -> int:
     return int(np.random.choice(top_idx, p=probs))
 
 
-def generate_ids(bundle: ModelBundle, messages: list[dict], p: GenParams) -> Iterator[int]:
+def build_prompt(bundle: ModelBundle, messages: list[dict], tools: list | None = None) -> str:
+    return bundle.tokenizer.apply_chat_template(
+        messages, tools=tools, tokenize=False, add_generation_prompt=True
+    )
+
+
+def generate_ids(
+    bundle: ModelBundle,
+    messages: list[dict],
+    p: GenParams,
+    tools: list | None = None,
+    extra_stop_ids: set[int] | None = None,
+) -> Iterator[int]:
     """Yield generated token ids one at a time (stop tokens are not yielded).
 
     This is the heart of the service — Liquid's reference decode loop, which
     threads both the attention KV cache and the convolution state back in on
     every step via the ``present* -> past*`` remap.
+
+    ``tools`` are rendered into the prompt by the chat template; ``extra_stop_ids``
+    lets callers stop early (e.g. at ``<|tool_call_end|>`` once a call is emitted).
     """
     session = bundle.session
     tokenizer = bundle.tokenizer
+    stop_ids = bundle.stop_ids | (extra_stop_ids or set())
 
-    prompt = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True
-    )
+    prompt = build_prompt(bundle, messages, tools)
     input_ids = np.array(
         [tokenizer.encode(prompt, add_special_tokens=False)], dtype=np.int64
     )
@@ -114,7 +133,7 @@ def generate_ids(bundle: ModelBundle, messages: list[dict], p: GenParams) -> Ite
             if name in cache:
                 cache[name] = outputs[i]
 
-        if next_token in bundle.stop_ids:
+        if next_token in stop_ids:
             break
         yield next_token
 
@@ -148,3 +167,82 @@ def generate_stream(bundle: ModelBundle, messages: list[dict], p: GenParams) -> 
         if len(text) > len(prev_text):
             yield text[len(prev_text):]
             prev_text = text
+
+
+def _parse_tool_calls(inner: str) -> list[dict] | None:
+    """Parse ``fn(a=1, b="x"), fn2(...)`` (the body between the tool-call tokens)
+    into ``[{"name": str, "arguments": dict}, ...]`` using ``ast`` — no eval."""
+    inner = inner.strip()
+    if not inner:
+        return None
+    # The body is a Python list literal of calls: [fn(...), ...]. Tolerate a
+    # bare call without the brackets too.
+    expr = inner if inner.startswith("[") else f"[{inner}]"
+    try:
+        node = ast.parse(expr, mode="eval").body
+    except SyntaxError:
+        return None
+    elts = node.elts if isinstance(node, ast.List) else [node]
+
+    calls: list[dict] = []
+    for call in elts:
+        if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+            continue
+        args: dict[str, Any] = {}
+        for i, a in enumerate(call.args):  # positional (best-effort)
+            try:
+                args[f"arg{i}"] = ast.literal_eval(a)
+            except Exception:
+                pass
+        for kw in call.keywords:
+            try:
+                args[kw.arg] = ast.literal_eval(kw.value)
+            except Exception:
+                args[kw.arg] = None
+        calls.append({"name": call.func.id, "arguments": args})
+    return calls or None
+
+
+def generate_turn(
+    bundle: ModelBundle, messages: list[dict], p: GenParams, tools: list | None = None
+) -> dict:
+    """Non-streaming generation that also detects a tool call.
+
+    Returns a dict: ``content`` (str|None), ``tool_calls`` (list|None),
+    ``finish_reason`` ('tool_calls'|'stop'|'length'), and token counts. When
+    ``tools`` are provided, generation stops right after ``<|tool_call_end|>``.
+    """
+    tokenizer = bundle.tokenizer
+    prompt = build_prompt(bundle, messages, tools)
+    prompt_tokens = len(tokenizer.encode(prompt, add_special_tokens=False))
+
+    extra_stop = {TOOL_CALL_END_ID} if tools else None
+    ids = list(generate_ids(bundle, messages, p, tools=tools, extra_stop_ids=extra_stop))
+    completion_tokens = len(ids)
+
+    if tools and TOOL_CALL_START_ID in ids:
+        s = ids.index(TOOL_CALL_START_ID)
+        try:
+            e = ids.index(TOOL_CALL_END_ID, s + 1)
+        except ValueError:
+            e = len(ids)
+        inner = tokenizer.decode(ids[s + 1:e], skip_special_tokens=True)
+        after = tokenizer.decode(ids[e + 1:], skip_special_tokens=True).strip()
+        tool_calls = _parse_tool_calls(inner)
+        if tool_calls:
+            return {
+                "content": after or None,
+                "tool_calls": tool_calls,
+                "finish_reason": "tool_calls",
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            }
+
+    text = tokenizer.decode(ids, skip_special_tokens=True).strip()
+    return {
+        "content": text,
+        "tool_calls": None,
+        "finish_reason": "length" if completion_tokens >= p.max_tokens else "stop",
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+    }
