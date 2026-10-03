@@ -5,9 +5,11 @@
 # docker-compose.gpu.yml).
 #
 # IMPORTANT: the CUDA/cuDNN version of this base image must match what
-# onnxruntime-gpu expects. onnxruntime-gpu 1.30 targets CUDA 12.x + cuDNN 9.
-# If you bump the ORT version, bump this base tag to match.
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+# onnxruntime-gpu expects. The PyPI onnxruntime-gpu 1.30 wheel is built for
+# CUDA 13.x + cuDNN 9 (on a 12.x base it can't load libcublasLt.so.13 and
+# silently falls back to CPU). CUDA 13 needs driver >= 580 and a Turing (sm_75)
+# or newer GPU. If you bump the ORT version, bump this base tag to match.
+FROM nvidia/cuda:13.0.3-cudnn-runtime-ubuntu24.04
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

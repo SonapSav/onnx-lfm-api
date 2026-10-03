@@ -19,6 +19,8 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
 - **Chat CLI:** `.venv/bin/lfm-chat` (talks to a running server; reads `.env`).
 - **Tests:** `.venv/bin/python -m pytest -m integration` (downloads model, real inference).
 - **Docker:** `docker compose up -d` (CPU). GPU: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build`.
+  GPU image = CUDA 13 base (ORT 1.30 wheel); per-card quant via `LFM_GPU_QUANT` (default fp16; **q4 on a GTX 1660**,
+  where fp16 math is slower than fp32 — README GPU section).
 
 ## Layout
 - `config.py` — `LFM_*` env settings (pydantic-settings; reads `./.env`).
@@ -57,7 +59,8 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
   `LFM_CACHE_DIR` (q4 is downloaded in `models/lfm2.5-1.2b-thinking/`), else it overwrites the Instruct model;
   (2) it reasons ~1000–1350 tokens before a tool call, so `LFM_MAX_TOKENS=256` cuts it off (≈70–90 s/call on this
   CPU); (3) `<think>`/`</think>` are plain tokens, so the reasoning lands in `content` — split it into
-  `reasoning_content` before adopting it. Not adopted on CPU; revisit on GPU (target: Jetson Orin, dev on a CUDA PC).
+  `reasoning_content` before adopting it. Not adopted: on a GTX 1660 (q4, 2048 max_tokens) it ran 10–21 s/call
+  and still hit the cap; details in the agent repo's CLAUDE.md.
 - On this host, port **8000** is taken (portainer) — the app uses **8383**.
 - **Don't `pkill -f onnx_lfm_api`** — the pattern matches the running shell and kills it. Target the PID/container.
 

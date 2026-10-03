@@ -9,9 +9,9 @@ services:
       context: .
       dockerfile: Dockerfile.gpu
     environment:
-      # fp16 is the sweet spot on GPU (native fp16, model fits easily in VRAM).
-      # Change here if you want a different variant on GPU.
-      LFM_QUANT: "fp16"
+      # fp16 suits GPUs with tensor cores. On cards without them (e.g. GTX 16xx)
+      # fp16 math is slow: set LFM_GPU_QUANT=q4 in ./.env (README, GPU section).
+      LFM_QUANT: "${LFM_GPU_QUANT:-fp16}"
       LFM_PROVIDERS: '["CUDAExecutionProvider","CPUExecutionProvider"]'
     deploy:
       resources:

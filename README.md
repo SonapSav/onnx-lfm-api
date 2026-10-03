@@ -182,8 +182,23 @@ curl -s http://localhost:8383/health      # -> "providers": ["CUDAExecutionProvi
 The same list is printed in the startup logs (`providers=[...]`). If you only
 see `CPUExecutionProvider`, CUDA didn't load — usually a driver/toolkit issue or
 a CUDA/cuDNN mismatch. The base image's CUDA/cuDNN version must match the
-`onnxruntime-gpu` release (1.30 → CUDA 12.x / cuDNN 9); adjust `Dockerfile.gpu`'s
-`FROM` tag if you change the ORT version.
+`onnxruntime-gpu` release (1.30 → CUDA 13.x / cuDNN 9, driver ≥ 580, Turing or
+newer); adjust `Dockerfile.gpu`'s `FROM` tag if you change the ORT version.
+
+**Pick the quant per card** (`LFM_GPU_QUANT` in `./.env`, default `fp16`). On a
+GTX 1660 (6 GB, no tensor cores) ORT's fp16 math is *slower than fp32*, and `q4`
+wins. Raw ORT session, 700-token prompt:
+
+| quant | prefill 700 tok | decode |
+|---|---|---|
+| fp16 | 3.05 s | 56 tok/s |
+| **q4** | **1.17 s** | **148 tok/s** |
+| q4f16 | 3.17 s | 161 tok/s |
+| fp32 | 0.51 s | 34 tok/s |
+
+Through the API with q4, a tool-calling request (706 prompt + 34 output tokens)
+takes 1.35 s, against 6.46 s on a 6-core Ryzen CPU (q4, 6 threads). Re-measure
+on cards with tensor cores (and Jetson Orin), where fp16 should do better.
 
 ### docker compose (recommended for LAN)
 
