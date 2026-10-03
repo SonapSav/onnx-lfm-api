@@ -23,6 +23,8 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
   where fp16 math is slower than fp32 — README GPU section). `LFM_IO_BINDING=auto|on|off` (default auto): GPU-resident
   cache between decode steps, auto = CUDA + fp16/bf16 cache only (`model.use_io_binding`; ORT's CUDA GQA is fp16/bf16
   only, so q4/fp32 run attention on CPU and binding is slower there). Token-identical; q4f16 1.36x decode at 2.3k ctx.
+  Casting the q4 graph's attention to fp16 (so GQA runs on CUDA) was tried on the GTX 1660 and dropped: tokens
+  identical, but decode no faster (slower at long context): Turing's CUDA GQA is no faster than the CPU one. Retry on sm_80+.
 
 ## Layout
 - `config.py` — `LFM_*` env settings (pydantic-settings; reads `./.env`).
