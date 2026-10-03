@@ -151,6 +151,27 @@ history), where `q4` is fastest; `q8` decodes faster but prefills ~45% slower.
 More uvicorn workers don't help: one request already uses all assigned cores,
 and each worker loads its own copy of the model.
 
+### Prompt-prefix caching
+Requests that start like an earlier one skip re-reading that start. Prefill is
+split at message boundaries (after `<|im_end|>`), and the model state there is
+kept in a small LRU (`LFM_PREFIX_CACHE_SIZE`, default 8, `0` = off). The
+snapshots are the first boundary (system message + tool schemas, shared by
+every call) and the last (the conversation so far, which the next agent round
+extends). LFM2's conv state can't be rewound, so states are only reused at
+those exact points. Greedy outputs match the uncached path (tested), and
+`/health` reports `prefix_cache` hits, misses and reused tokens. Each snapshot
+costs ~25 KB per prompt token for q4 (~20 MB for an agent prompt), in VRAM
+under IO binding.
+
+| tool-calling request (706 prompt + 34 out) | no cache | cached prefix |
+|---|---|---|
+| Ryzen 5 5500U, q4, 6 threads | 6.46 s | **2.06 s** |
+| GTX 1660, q4 | 1.35 s | **0.36 s** |
+
+Real agent runs (onnx-lfm-agent live evals, 48 runs, GTX 1660): 141 of 148
+lookups hit, and calls take 0.5–0.9 s instead of 1.5–2.2 s, with the same
+pass rates.
+
 ## Docker
 
 ```bash

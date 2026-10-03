@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # (q4, fp32) ORT runs attention on the CPU, and a GPU-resident cache only adds
     # copies (measured slower). Override: "on" | "off".
     io_binding: Literal["auto", "on", "off"] = "auto"
+    # Prompt-prefix caching: how many model-state snapshots (taken at message
+    # boundaries) to keep for reuse by later prompts with the same start. Each
+    # holds the cache for its prefix (~25 KB/token for q4, so ~20 MB for an
+    # agent prompt; in VRAM under IO binding). 0 disables it.
+    prefix_cache_size: int = 8
 
     # --- Generation defaults (Liquid's recommended settings) ---
     max_tokens: int = 256

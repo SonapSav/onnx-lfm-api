@@ -9,6 +9,7 @@ from huggingface_hub import snapshot_download
 from transformers import AutoTokenizer
 
 from .config import settings
+from .prefix_cache import PrefixCache
 
 # Special chat-end token for the LFM2 ChatML-like template. We stop on this in
 # addition to the tokenizer's EOS so generation ends cleanly at turn boundaries.
@@ -53,6 +54,8 @@ class ModelBundle:
     stop_ids: set[int]
     providers: list[str]
     io_binding: bool = False  # decode keeps the cache on the GPU (see generate.py)
+    boundary_id: int | None = None  # <|im_end|>: message boundary for prefix snapshots
+    prefix_cache: PrefixCache | None = None
 
 
 def use_io_binding(session: ort.InferenceSession, mode: str) -> bool:
@@ -105,7 +108,12 @@ def load_model() -> ModelBundle:
     im_end_id = tokenizer.convert_tokens_to_ids(IM_END)
     if isinstance(im_end_id, int) and im_end_id >= 0:
         stop_ids.add(im_end_id)
+    else:
+        im_end_id = None
 
     return ModelBundle(session=session, tokenizer=tokenizer,
                        input_names=input_names, stop_ids=stop_ids,
-                       providers=session.get_providers(), io_binding=io_binding)
+                       providers=session.get_providers(), io_binding=io_binding,
+                       boundary_id=im_end_id,
+                       prefix_cache=PrefixCache(settings.prefix_cache_size)
+                       if settings.prefix_cache_size > 0 else None)

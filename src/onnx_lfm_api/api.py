@@ -99,6 +99,8 @@ async def health():
         "quant": settings.quant,
         "providers": bundle.providers if bundle is not None else [],
         "io_binding": bundle.io_binding if bundle is not None else None,
+        "prefix_cache": bundle.prefix_cache.stats()
+        if bundle is not None and bundle.prefix_cache is not None else None,
     }
 
 

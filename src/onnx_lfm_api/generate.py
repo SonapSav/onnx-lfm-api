@@ -8,6 +8,7 @@ import numpy as np
 
 from .config import settings
 from .model import ModelBundle
+from .prefix_cache import prefill_cuts
 
 # Map ORT input dtype strings to numpy dtypes for building the empty cache.
 _DTYPE_MAP = {
@@ -121,48 +122,53 @@ def generate_ids(
     lets callers stop early (e.g. at ``<|tool_call_end|>`` once a call is emitted).
     """
     session = bundle.session
-    tokenizer = bundle.tokenizer
     stop_ids = bundle.stop_ids | (extra_stop_ids or set())
-
-    prompt = build_prompt(bundle, messages, tools)
-    input_ids = np.array(
-        [tokenizer.encode(prompt, add_special_tokens=False)], dtype=np.int64
-    )
-    seq_len = input_ids.shape[1]
-
-    cache = _init_cache(session)
     out_names = [o.name for o in session.get_outputs()]
     binding = session.io_binding() if bundle.io_binding else None
-    generated: list[int] = []
 
-    for step in range(p.max_tokens):
-        if step == 0:
-            ids = input_ids
-            pos = np.arange(seq_len, dtype=np.int64).reshape(1, -1)
-        else:
-            ids = np.array([[generated[-1]]], dtype=np.int64)
-            pos = np.array([[seq_len + len(generated) - 1]], dtype=np.int64)
-
-        attn = np.ones((1, seq_len + len(generated)), dtype=np.int64)
-        core = {"input_ids": ids, "attention_mask": attn}
+    def forward(ids: list[int], start: int, cache: dict) -> tuple[np.ndarray, dict]:
+        """Run `ids` at positions start.. on top of `cache`.
+        Returns (logits of the last position, the next cache)."""
+        total = start + len(ids)
+        core = {"input_ids": np.array([ids], dtype=np.int64),
+                "attention_mask": np.ones((1, total), dtype=np.int64)}
         if "position_ids" in bundle.input_names:
-            core["position_ids"] = pos
-
+            core["position_ids"] = np.arange(start, total, dtype=np.int64).reshape(1, -1)
         if binding is None:
             outputs = session.run(None, {**core, **cache})
             logits, states = outputs[0], outputs[1:]
         else:
             logits, states = _run_bound(session, binding, out_names, core, cache)
-        next_token = _sample(logits[0, -1], generated, p)
-        generated.append(next_token)
-
         # Feed each present* state back as the matching past* input next step.
+        cache = dict(cache)
         for out_name, state in zip(out_names[1:], states):
             name = out_name.replace("present_conv", "past_conv")
             name = name.replace("present.", "past_key_values.")
             if name in cache:
                 cache[name] = state
+        return logits[0, -1], cache
 
+    prompt = build_prompt(bundle, messages, tools)
+    prompt_ids = bundle.tokenizer.encode(prompt, add_special_tokens=False)
+
+    # Prefill, resuming from the longest cached prefix and snapshotting at
+    # message boundaries for later prompts (see prefix_cache.py).
+    pc = bundle.prefix_cache
+    start, cache = pc.lookup(prompt_ids) if pc else (0, None)
+    cache = cache or _init_cache(session)
+    cuts = prefill_cuts(prompt_ids, start, bundle.boundary_id) if pc else [len(prompt_ids)]
+    for cut in cuts:
+        logits, cache = forward(prompt_ids[start:cut], start, cache)
+        if pc and cut < len(prompt_ids):
+            pc.store(prompt_ids[:cut], cache)
+        start = cut
+
+    generated: list[int] = []
+    for step in range(p.max_tokens):
+        if step:
+            logits, cache = forward([generated[-1]], len(prompt_ids) + step - 1, cache)
+        next_token = _sample(logits, generated, p)
+        generated.append(next_token)
         if next_token in stop_ids:
             break
         yield next_token

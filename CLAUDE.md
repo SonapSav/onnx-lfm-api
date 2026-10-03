@@ -23,6 +23,9 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
   where fp16 math is slower than fp32 — README GPU section). `LFM_IO_BINDING=auto|on|off` (default auto): GPU-resident
   cache between decode steps, auto = CUDA + fp16/bf16 cache only (`model.use_io_binding`; ORT's CUDA GQA is fp16/bf16
   only, so q4/fp32 run attention on CPU and binding is slower there). Token-identical; q4f16 1.36x decode at 2.3k ctx.
+  **Prompt-prefix caching** (`prefix_cache.py`, `LFM_PREFIX_CACHE_SIZE`, default 8): prefill is split at `<|im_end|>`
+  boundaries; snapshots at the first boundary (from scratch only) and the last; LRU; `/health` shows stats. Conv state
+  can't be rewound, so never derive a shorter snapshot from a longer state. Agent round 6.46 -> 2.06 s CPU, 1.35 -> 0.36 s GPU.
   Casting the q4 graph's attention to fp16 (so GQA runs on CUDA) was tried on the GTX 1660 and dropped: tokens
   identical, but decode no faster (slower at long context): Turing's CUDA GQA is no faster than the CPU one. Retry on sm_80+.
 
