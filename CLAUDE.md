@@ -20,7 +20,9 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
 - **Tests:** `.venv/bin/python -m pytest -m integration` (downloads model, real inference).
 - **Docker:** `docker compose up -d` (CPU). GPU: `docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build`.
   GPU image = CUDA 13 base (ORT 1.30 wheel); per-card quant via `LFM_GPU_QUANT` (default fp16; **q4 on a GTX 1660**,
-  where fp16 math is slower than fp32 — README GPU section).
+  where fp16 math is slower than fp32 — README GPU section). `LFM_IO_BINDING=auto|on|off` (default auto): GPU-resident
+  cache between decode steps, auto = CUDA + fp16/bf16 cache only (`model.use_io_binding`; ORT's CUDA GQA is fp16/bf16
+  only, so q4/fp32 run attention on CPU and binding is slower there). Token-identical; q4f16 1.36x decode at 2.3k ctx.
 
 ## Layout
 - `config.py` — `LFM_*` env settings (pydantic-settings; reads `./.env`).

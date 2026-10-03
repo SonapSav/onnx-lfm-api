@@ -74,6 +74,30 @@ def _sample(logits: np.ndarray, generated: list[int], p: GenParams) -> int:
     return int(np.random.choice(top_idx, p=probs))
 
 
+def _run_bound(session, binding, out_names: list[str], core: dict, cache: dict):
+    """One step with the cache kept on the GPU (ORT IO binding).
+
+    The past* inputs are the previous step's present* outputs, still on the
+    device, so the cache never round-trips through host memory; only the logits
+    come back. Returns (logits ndarray, present* OrtValues in output order).
+    """
+    binding.clear_binding_inputs()
+    binding.clear_binding_outputs()
+    for name, value in core.items():
+        binding.bind_cpu_input(name, value)
+    for name, value in cache.items():
+        if isinstance(value, np.ndarray):  # step 0: the empty initial cache
+            binding.bind_cpu_input(name, value)
+        else:
+            binding.bind_ortvalue_input(name, value)
+    binding.bind_output(out_names[0], "cpu")
+    for name in out_names[1:]:
+        binding.bind_output(name, "cuda", 0)
+    session.run_with_iobinding(binding)
+    outputs = binding.get_outputs()
+    return outputs[0].numpy(), outputs[1:]
+
+
 def build_prompt(bundle: ModelBundle, messages: list[dict], tools: list | None = None) -> str:
     return bundle.tokenizer.apply_chat_template(
         messages, tools=tools, tokenize=False, add_generation_prompt=True
@@ -107,6 +131,8 @@ def generate_ids(
     seq_len = input_ids.shape[1]
 
     cache = _init_cache(session)
+    out_names = [o.name for o in session.get_outputs()]
+    binding = session.io_binding() if bundle.io_binding else None
     generated: list[int] = []
 
     for step in range(p.max_tokens):
@@ -118,20 +144,24 @@ def generate_ids(
             pos = np.array([[seq_len + len(generated) - 1]], dtype=np.int64)
 
         attn = np.ones((1, seq_len + len(generated)), dtype=np.int64)
-        feed = {"input_ids": ids, "attention_mask": attn, **cache}
+        core = {"input_ids": ids, "attention_mask": attn}
         if "position_ids" in bundle.input_names:
-            feed["position_ids"] = pos
+            core["position_ids"] = pos
 
-        outputs = session.run(None, feed)
-        next_token = _sample(outputs[0][0, -1], generated, p)
+        if binding is None:
+            outputs = session.run(None, {**core, **cache})
+            logits, states = outputs[0], outputs[1:]
+        else:
+            logits, states = _run_bound(session, binding, out_names, core, cache)
+        next_token = _sample(logits[0, -1], generated, p)
         generated.append(next_token)
 
         # Feed each present* state back as the matching past* input next step.
-        for i, out in enumerate(session.get_outputs()[1:], 1):
-            name = out.name.replace("present_conv", "past_conv")
+        for out_name, state in zip(out_names[1:], states):
+            name = out_name.replace("present_conv", "past_conv")
             name = name.replace("present.", "past_key_values.")
             if name in cache:
-                cache[name] = outputs[i]
+                cache[name] = state
 
         if next_token in stop_ids:
             break

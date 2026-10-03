@@ -52,6 +52,24 @@ class ModelBundle:
     input_names: set[str]
     stop_ids: set[int]
     providers: list[str]
+    io_binding: bool = False  # decode keeps the cache on the GPU (see generate.py)
+
+
+def use_io_binding(session: ort.InferenceSession, mode: str) -> bool:
+    """Whether to keep the cache on the GPU between steps (LFM_IO_BINDING).
+
+    Only pays off when attention runs on the GPU too: ORT's CUDA
+    GroupQueryAttention is fp16/bf16-only, so with an fp32 cache (q4, fp32) it
+    falls back to CPU and a GPU-resident cache adds a copy each way per layer.
+    GTX 1660, decode at 64/700/2000 tokens of context: q4f16 x1.08/1.24/1.34,
+    fp16 x1.03/1.12/1.20, q4 x0.89/0.68/0.61.
+    """
+    if mode == "off" or "CUDAExecutionProvider" not in session.get_providers():
+        return False
+    if mode == "on":
+        return True
+    return any(i.type in ("tensor(float16)", "tensor(bfloat16)")
+               for i in session.get_inputs() if i.name.startswith("past_key_values"))
 
 
 def load_model() -> ModelBundle:
@@ -68,10 +86,12 @@ def load_model() -> ModelBundle:
     session = ort.InferenceSession(
         model_path, sess_options=so, providers=settings.providers
     )
+    io_binding = use_io_binding(session, settings.io_binding)
     # Report which EPs actually engaged. ORT silently falls back to CPU if a
     # requested provider (e.g. CUDA) can't load, so this makes GPU use verifiable.
     print(
-        f"[onnx-lfm-api] loaded {model_path} | providers={session.get_providers()}",
+        f"[onnx-lfm-api] loaded {model_path} | providers={session.get_providers()}"
+        f" | io_binding={io_binding}",
         flush=True,
     )
 
@@ -88,4 +108,4 @@ def load_model() -> ModelBundle:
 
     return ModelBundle(session=session, tokenizer=tokenizer,
                        input_names=input_names, stop_ids=stop_ids,
-                       providers=session.get_providers())
+                       providers=session.get_providers(), io_binding=io_binding)

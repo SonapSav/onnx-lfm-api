@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -29,6 +31,11 @@ class Settings(BaseSettings):
     # --- ONNX Runtime ---
     intra_op_threads: int = 0  # 0 = let ORT pick (all cores)
     providers: list[str] = ["CPUExecutionProvider"]
+    # Keep the per-token cache on the GPU between decode steps (ORT IO binding).
+    # auto = on when CUDA is active and the cache is fp16/bf16. With an fp32 cache
+    # (q4, fp32) ORT runs attention on the CPU, and a GPU-resident cache only adds
+    # copies (measured slower). Override: "on" | "off".
+    io_binding: Literal["auto", "on", "off"] = "auto"
 
     # --- Generation defaults (Liquid's recommended settings) ---
     max_tokens: int = 256

@@ -200,6 +200,21 @@ Through the API with q4, a tool-calling request (706 prompt + 34 output tokens)
 takes 1.35 s, against 6.46 s on a 6-core Ryzen CPU (q4, 6 threads). Re-measure
 on cards with tensor cores (and Jetson Orin), where fp16 should do better.
 
+**IO binding** (`LFM_IO_BINDING`, default `auto`) keeps the per-token cache on the
+GPU between decode steps instead of round-tripping it through host memory.
+`auto` turns it on only when CUDA is active **and** the cache is fp16/bf16
+(fp16, q4f16). ORT's CUDA attention kernel (`GroupQueryAttention`) is fp16/bf16
+only. With an fp32 cache (q4, fp32) attention runs on the CPU, and a GPU-resident
+cache just adds copies: 0.6–0.9× in the same test. `/health` reports
+`"io_binding"`. Outputs are token-identical either way. GTX 1660, decode speed:
+
+| q4f16, context | 64 | 700 | 2000 | 2300 (via the API) |
+|---|---|---|---|---|
+| speed-up | 1.08× | 1.24× | 1.34× | **1.36×** (41.5 → 56.5 tok/s) |
+
+On the 1660, q4 is still fastest overall (63.8 tok/s at 2300 context), because
+its fp32 matmuls are what this card does best.
+
 ### docker compose (recommended for LAN)
 
 ```bash

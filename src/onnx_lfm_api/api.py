@@ -98,6 +98,7 @@ async def health():
         "model": settings.model_repo,
         "quant": settings.quant,
         "providers": bundle.providers if bundle is not None else [],
+        "io_binding": bundle.io_binding if bundle is not None else None,
     }
 
 
