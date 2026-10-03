@@ -47,7 +47,11 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
 - **Rebuild the Docker image after source changes** — the image does not auto-update.
 - **`LFM_INTRA_OP_THREADS=0` (ORT default) is slower than physical-core count** on this 6c/12t
   Ryzen: 11.3 s vs 6.5 s per tool-calling request, at double the CPU. SMT siblings contend.
-  Keep the code/compose default 0 (portable); set the host value in `.env`. Workers don't help.
+  Keep the code/compose default 0 (portable); set the host value in `.env`.
+- **More workers / a second instance don't help** — measured (q4, batch of 6 tool-calling requests):
+  1×6 threads 38.6 s; 2 instances×3 threads concurrent 37.9 s (noise); 2×6 threads 55.7 s. Decode is
+  memory-bandwidth bound (weights re-read per token), so instances split the same bandwidth. The real
+  lever for agent workloads is prompt-prefix caching (tool schemas + history are re-prefilled every call).
 - On this host, port **8000** is taken (portainer) — the app uses **8383**.
 - **Don't `pkill -f onnx_lfm_api`** — the pattern matches the running shell and kills it. Target the PID/container.
 
