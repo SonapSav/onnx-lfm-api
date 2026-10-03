@@ -52,6 +52,12 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
   1×6 threads 38.6 s; 2 instances×3 threads concurrent 37.9 s (noise); 2×6 threads 55.7 s. Decode is
   memory-bandwidth bound (weights re-read per token), so instances split the same bandwidth. The real
   lever for agent workloads is prompt-prefix caching (tool schemas + history are re-prefilled every call).
+- **LFM2.5-1.2B-Thinking** (`LFM_MODEL_REPO=LiquidAI/LFM2.5-1.2B-Thinking-ONNX`) loads and tool-calls with this
+  code (same template), but: (1) its ONNX files have the **same names** as Instruct's — give it its own
+  `LFM_CACHE_DIR` (q4 is downloaded in `models/lfm2.5-1.2b-thinking/`), else it overwrites the Instruct model;
+  (2) it reasons ~1000–1350 tokens before a tool call, so `LFM_MAX_TOKENS=256` cuts it off (≈70–90 s/call on this
+  CPU); (3) `<think>`/`</think>` are plain tokens, so the reasoning lands in `content` — split it into
+  `reasoning_content` before adopting it. Not adopted on CPU; revisit on GPU (target: Jetson Orin, dev on a CUDA PC).
 - On this host, port **8000** is taken (portainer) — the app uses **8383**.
 - **Don't `pkill -f onnx_lfm_api`** — the pattern matches the running shell and kills it. Target the PID/container.
 
