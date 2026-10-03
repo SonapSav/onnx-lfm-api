@@ -34,7 +34,8 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
 
 ## Conventions
 - All config is env vars prefixed `LFM_`. Secrets/quant live in gitignored `.env`.
-  `LFM_QUANT` default `q4`; on-disk cache in `models/`. (Deployed default: `q4f16`.)
+  `LFM_QUANT` default `q4`; on-disk cache in `models/`. Deployed (this host's `.env`):
+  `LFM_QUANT=q4`, `LFM_INTRA_OP_THREADS=6` — chosen by benchmark, see README "Performance tuning".
 - Model loads once and stays resident; generation is serialized (single worker).
 - GPU is opt-in only; CPU is the default build. `/health` reports active ORT providers.
 
@@ -44,6 +45,9 @@ LFM2 architecture. Package: `src/onnx_lfm_api/`.
   to materialize real co-located files — keep it that way.
 - **Never commit `models/` (weights, GBs) or `.env` (secret).** Already gitignored.
 - **Rebuild the Docker image after source changes** — the image does not auto-update.
+- **`LFM_INTRA_OP_THREADS=0` (ORT default) is slower than physical-core count** on this 6c/12t
+  Ryzen: 11.3 s vs 6.5 s per tool-calling request, at double the CPU. SMT siblings contend.
+  Keep the code/compose default 0 (portable); set the host value in `.env`. Workers don't help.
 - On this host, port **8000** is taken (portainer) — the app uses **8383**.
 - **Don't `pkill -f onnx_lfm_api`** — the pattern matches the running shell and kills it. Target the PID/container.
 

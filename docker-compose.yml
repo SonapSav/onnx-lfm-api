@@ -11,6 +11,9 @@ services:
       - ./models:/models
     environment:
       LFM_QUANT: "${LFM_QUANT:-q4}"   # override in ./.env; q4 | q4f16 | q8 | fp16 | "" (fp32)
+      # ONNX Runtime intra-op threads. 0 = ORT default (all logical CPUs), which
+      # is slower than one thread per physical core here — set it in ./.env.
+      LFM_INTRA_OP_THREADS: "${LFM_INTRA_OP_THREADS:-0}"
       LFM_PORT: "8383"
       LFM_MAX_TOKENS: "256"
       # Secret is read from ./.env (gitignored), never hardcoded here.

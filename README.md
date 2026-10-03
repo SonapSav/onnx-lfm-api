@@ -129,8 +129,27 @@ Flags: `--model`, `--max-tokens`, `--temperature`, `--no-stream`.
 ## Configuration
 
 All settings are env vars prefixed `LFM_` (see `.env.example`). Notably
-`LFM_QUANT` selects the precision variant — `q8` or `q4f16` are good CPU
-alternatives to the default `q4`.
+`LFM_QUANT` selects the precision variant (default `q4`; also `q4f16`, `q8`,
+`fp16`, `""` for fp32).
+
+### Performance tuning (CPU)
+Set `LFM_INTRA_OP_THREADS` to your **physical** core count. The default (`0`)
+lets ONNX Runtime use every logical CPU, and the SMT siblings compete for the
+same cores: slower *and* the whole machine is pegged. Measured on a Ryzen 5
+5500U (6 cores / 12 threads), temperature 0, median of 3:
+
+| `LFM_QUANT` | threads | generation | tool-calling request (706 prompt + 34 out) | CPU |
+|---|---|---|---|---|
+| q4f16 | 0 (=12) | 14.7 tok/s | 11.3 s | ~11.6 cores |
+| q4f16 | 6 | 17.4 tok/s | 6.8 s | 6 cores |
+| **q4** | **6** | **17.6 tok/s** | **6.5 s** | **6 cores** |
+| q4 | 8 | 18.3 tok/s | 7.3 s | 8 cores |
+| q8 | 6 | 20.2 tok/s | 9.4 s | 6 cores |
+
+Tool-calling requests are dominated by prompt processing (tool schemas +
+history), where `q4` is fastest; `q8` decodes faster but prefills ~45% slower.
+More uvicorn workers don't help: one request already uses all assigned cores,
+and each worker loads its own copy of the model.
 
 ## Docker
 
